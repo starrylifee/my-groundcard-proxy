@@ -3,39 +3,46 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 const API_KEY = process.env.GROUNDCARD_API_KEY;
 const BASE_URL = 'https://growndcard.com';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // ⭐️ CORS 헤더 추가 (모든 도메인 허용)
-  // Vercel이 Canva의 요청을 허용하도록 설정합니다.
+/**
+ * 모든 응답에 CORS 헤더를 설정하는 헬퍼 함수
+ */
+const setCorsHeaders = (res: NextApiResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+};
 
-  // ⭐️ 브라우저가 본 요청(POST) 전에 보내는 사전 요청(OPTIONS) 처리
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // 1. 모든 응답에 CORS 헤더 우선 적용
+  setCorsHeaders(res);
+
+  // 2. 브라우저의 사전 요청(OPTIONS) 처리
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  // 1. POST 요청이 아니면 거부
+  // 3. POST 요청이 아니면 거부
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+    res.status(405).json({ message: 'Method not allowed' });
+    return;
   }
 
-  // 2. Canva 앱에서 보낸 정보
-  const { classId, studentCode, points, description } = req.body ?? {};
-
-  // 3. 필수 정보 확인
-  if (!classId || !studentCode || typeof points !== 'number') {
-    return res.status(400).json({ message: 'Invalid payload' });
-  }
-
-  // 4. Vercel에 숨겨둔 비밀 API 키 확인
+  // 4. Vercel에 API 키가 설정되어 있는지 확인
   if (!API_KEY) {
-    return res.status(500).json({ message: 'Server configuration error: API key not found' });
+    res.status(500).json({ message: 'Server configuration error: API key not found' });
+    return;
+  }
+  
+  // 5. React 앱에서 보낸 정보 유효성 검사
+  const { classId, studentCode, points, description } = req.body ?? {};
+  if (!classId || !studentCode || typeof points !== 'number') {
+    res.status(400).json({ message: 'Invalid payload from client' });
+    return;
   }
 
   try {
-    // 5. 서버(여기)가 대신 groundcard.com에 안전하게 요청
-    const r = await fetch(`${BASE_URL}/api/v1/classes/${classId}/students/${studentCode}/points`, {
+    // 6. Vercel 서버가 groundcard.com에 대신 요청
+    const response = await fetch(`${BASE_URL}/api/v1/classes/${classId}/students/${studentCode}/points`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -44,16 +51,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       body: JSON.stringify({ type: 'reward', points, description }),
     });
 
-    const data = await r.json().catch(() => ({}));
-    
-    if (!r.ok) {
-      return res.status(r.status).json({ message: data.message || 'Upstream error' });
-    }
+    const data = await response.json().catch(() => ({}));
 
-    // 6. 성공 결과를 Canva 앱에 다시 전달
-    return res.status(200).json(data); // ⭐️ 성공 시 groundcard가 준 데이터를 그대로 반환
+    // 7. groundcard가 보낸 응답(성공/실패)을 React 앱에 그대로 전달
+    //    (이미 CORS 헤더가 설정되어 있으므로 안전)
+    res.status(response.status).json(data);
 
   } catch (e) {
-    return res.status(502).json({ message: 'Upstream network error' });
+    // 8. 네트워크 자체 오류 처리
+    res.status(502).json({ message: 'Upstream network error', error: (e as Error).message });
   }
 }
